@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # The go directive of go.mod is the version the module requires
+          # (github.com/malivvan/pty pins it), so CI follows it instead of
+          # pinning versions here that drift apart from it.
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # `make demo` is the local convenience; CI drives `go` directly because
+      # the Windows runner image has no make (MSYS2 is installed but kept off
+      # PATH). `go build ./demos/...` compiles every demo that applies to the
+      # host, and the two platform-specific demos are built for their target.
+      # Keep this in step with the `demo` target of the Makefile.
+      - name: Build demos
+        shell: bash
+        run: |
+          go build ./demos/...
+          GOOS=js GOARCH=wasm go build -o /dev/null ./demos/31_js_wasm_pty_bridge
+          GOOS=windows go build -o /dev/null ./demos/30_windows_conpty_shell
+
+      - name: Test (no race)
+        if: matrix.os != 'ubuntu-latest'
+        run: go test -count=1 ./...
+
+      - name: Test (with race detector)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -count=1 ./...
+
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
